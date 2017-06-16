@@ -1,0 +1,453 @@
+/**
+********************************************************
+* 文件名：comm.c
+* 作者：	感想科技 研发部 软件组
+* 版本：	V1.0.0
+* 时间:		2014.03.03
+* 说明：	此c文件提供ADC模块包含的所有函数功能
+********************************************************
+*/
+#include "includeFile.h"
+#include "comm.h"
+#include "usart.h"
+#include "battery.h"
+#include "pcf8563.h"
+#include "control.h"
+
+CMD_TRA pcCmd;
+CMD_TRA resCmd;
+
+
+
+
+volatile u8 rs232_RxBuf[RS232_CFG_RX_MAX_SIZE];
+volatile u8 rs232_TxBuf[RS232_CFG_TX_MAX_SIZE];
+volatile u8 rs485_RxBuf[RS485_CFG_RX_MAX_SIZE];
+volatile u8 rs485_TxBuf[RS485_CFG_TX_MAX_SIZE];
+volatile u8 tcpipRs232_RxBuf[TCPIP_RS232_CFG_RX_MAX_SIZE];
+volatile u8 tcpipRs232_TxBuf[TCPIP_RS232_CFG_TX_MAX_SIZE];
+
+
+
+#define COM_DATABUF_SIZE  64
+u8 gloDataBuffer[COM_DATABUF_SIZE];
+u8 gloDeviceId = 0;
+u8 gloUartAddr =0;
+
+
+void CommunicationInit(void)
+{
+  RS232_Init(9600); 
+  RS485_Init(9600);
+  TCP_RS232_Init(9600);
+  
+  memset((u8 *)rs232_RxBuf,0,sizeof(rs232_RxBuf));
+  memset((u8 *)rs485_RxBuf,0,sizeof(rs485_RxBuf));
+  
+}
+
+
+#define CRC_POLYNOM 0xa001//CRC16的多项式
+u16 CRC16(u8 *checksource, u16 length)
+{
+  u16 verifynum =0xffff;
+  u8 verifyi,verifyj;
+  
+  length= (length >64)? 64:length; //必须限制长度
+  for (verifyi=0;verifyi<length;verifyi++)
+  {
+    verifynum^=*checksource;
+    for (verifyj=0;verifyj<8;verifyj++)
+    {
+      if (verifynum&0x0001)
+        verifynum=(verifynum>>1)^CRC_POLYNOM;//CRC多项式
+      else
+        verifynum=(verifynum>>1) ;
+    }
+    checksource++;
+  }
+  return verifynum;     
+}
+
+
+
+
+u8 EncodeTransferData(u8 *inBuf, u8 **outBuf, u8 decLen)
+{//发送数据转义
+  u16 sendLeft=256-2;
+  while(decLen)
+  {
+    **outBuf=*inBuf;
+    sendLeft--;
+    if(**outBuf>=TRANSFERCHAR){
+      **outBuf=TRANSFERCHAR;
+      *outBuf=(*outBuf)+1;
+      **outBuf=(*inBuf)-TRANSFERCHAR;
+      sendLeft--;
+    }
+    inBuf++;
+    *outBuf=(*outBuf)+1;
+    decLen--;
+    if(sendLeft==0)
+      return 0;
+  }
+  return 1;
+}
+
+
+void DecodeTransferData(u8 *inBuf, u8 *outBuf, u8 decLen)
+{
+  //decLen转移数据体长度
+  while(decLen)
+  {
+    *outBuf=*inBuf;
+    inBuf=inBuf+1;
+    outBuf=outBuf+1;
+    decLen--;
+  }
+  
+}
+
+
+#define HEAD_INFO_LEN	2   //协议帧头部信息长度
+#define CRC_DATA_LEN		2
+u8 PackedBuffer(u8 cmd, u8 *buf, u16 len, u8 state, UART_DEVICE_TYPE uartType)
+{
+  u16 frameLenth = 0;
+  u16 dataEnteryLen;  //协议帧数据体长度
+  dataEnteryLen = len;
+  
+  resCmd.len=0; 
+  resCmd.deviceId=gloDeviceId;
+  resCmd.cmd = cmd;
+  resCmd.uartAddr=gloUartAddr;
+  memcpy(&resCmd.pbuf[0],buf,dataEnteryLen-2); //len为有效数据长度
+  resCmd.len = dataEnteryLen; 
+  
+  if (uartType==RS232_TYPE)
+    memcpy((u8 *)&rs232_TxBuf,&resCmd.deviceId,HEAD_INFO_LEN+dataEnteryLen); //头部信息长度+数据体长度
+  else if (uartType==RS485_TYPE)
+    memcpy((u8 *)&rs485_TxBuf,&resCmd.deviceId,HEAD_INFO_LEN+dataEnteryLen); 
+  else if (uartType==TCPIP_RS232_TYPE)
+    memcpy((u8 *)&tcpipRs232_TxBuf,&resCmd.deviceId,HEAD_INFO_LEN+dataEnteryLen); 
+  
+  resCmd.crc = CRC16((u8 *)&resCmd.deviceId,HEAD_INFO_LEN+dataEnteryLen); 
+  if (uartType==RS232_TYPE)
+    memcpy((u8 *)&rs232_TxBuf[HEAD_INFO_LEN+dataEnteryLen],&resCmd.crc, CRC_DATA_LEN); //copy CRC校验码
+  else if (uartType==RS485_TYPE)
+    memcpy((u8 *)&rs485_TxBuf[HEAD_INFO_LEN+dataEnteryLen],&resCmd.crc, CRC_DATA_LEN); 
+  else if (uartType==TCPIP_RS232_TYPE)
+    memcpy((u8 *)&tcpipRs232_TxBuf[HEAD_INFO_LEN+dataEnteryLen],&resCmd.crc, CRC_DATA_LEN); 
+  
+  frameLenth = HEAD_INFO_LEN+dataEnteryLen+CRC_DATA_LEN; //帧头信息长度++数据体长度+crc长度
+  return frameLenth;
+}
+
+
+
+
+extern volatile u8 recSta;
+ u16 recCrc;
+u8 UnpackedBuffer(UART_DEVICE_TYPE uartType)
+{
+  
+  u8 tmpBuf[64];
+  u8 *outBuf=(u8 *)&pcCmd.deviceId;  //pcCmd是转义后存储数据的缓冲区,指针outBuf指向pcCmd
+  //  u8 *inBuf=(u8 *)tmpBuf;  //指向缓冲区tmpBuf的指针
+  u16 i;
+  s16 len,revLen;
+ 
+  
+  switch (uartType)
+  {
+  case RS232_TYPE:
+    revLen=rs232RecNum;
+    revLen=(revLen>32)?32:revLen; //必须限制长度
+    for(i=0; i<revLen;i++)
+    {
+      tmpBuf[i]=rs232_RxBuf[i];
+    }
+    break;
+  case RS485_TYPE:
+    revLen=rs485RecNum;
+    revLen=(revLen>32)?32:revLen; //必须限制长度
+    for(i=0; i<revLen;i++)
+    {
+      tmpBuf[i]=rs485_RxBuf[i];
+    }
+    break;
+  case TCPIP_RS232_TYPE:
+    /*
+    revLen=tcpipRs232RecNum;
+    revLen=(revLen>32)?32:revLen; //必须限制长度
+    for(i=0; i<revLen;i++)
+    {
+    tmpBuf[i]=tcpipRs232_RxBuf[i];
+  }
+    
+    */	
+    break;
+  default: break;
+  }
+  
+  //第一步先找到头部信息
+  pcCmd.uartAddr=tmpBuf[0];
+  gloUartAddr=tmpBuf[0];
+  pcCmd.len=tmpBuf[1];
+  pcCmd.cmd=tmpBuf[2]; 
+  
+  //已经读取头部信息，开始读取数据体
+  len = (s16)pcCmd.len-1;  //减去功能码长度
+  outBuf=(u8 *)pcCmd.pbuf; //outBuf指针指向数据体位置
+  if (len != 0) //解析有效数据体
+  {
+    len= (len >32)? 32:len;
+    DecodeTransferData(tmpBuf+3,outBuf,len); 
+  }
+  
+  //读取校验码
+  pcCmd.crc=(u16)(tmpBuf[revLen-2]<<8)+ (u8)tmpBuf[revLen-1];
+  recCrc = CRC16((u8 *)&tmpBuf , pcCmd.len+2);
+  if(recCrc!=pcCmd.crc)
+    return CMD_CRCERR;
+#if FALSE
+  if (pcCmd.deviceId!=gloDeviceId)
+  {
+    return CMD_ERRDEVICE;
+  }
+#endif  
+  return  pcCmd.cmd;
+}
+
+//获取待发送的电量信息
+u8 GetRunningInformation(void)
+{
+  u8 dataLen = 0;
+  
+  gloDataBuffer[dataLen++]=(u8)((DISPBATVOL/10)>>8);
+  gloDataBuffer[dataLen++]=(u8)(DISPBATVOL/10);
+  gloDataBuffer[dataLen++]=(u8)((DISPLOADCUR/10)>>8);
+  gloDataBuffer[dataLen++]=(u8)(DISPLOADCUR/10);
+  gloDataBuffer[dataLen++]=(u8)(DISPBATSOC*10); //电量数值不放大
+  gloDataBuffer[dataLen++]=0;
+  gloDataBuffer[dataLen++]= (u8)((DISPPOLARCUR/10)>>8);
+  gloDataBuffer[dataLen++]= (u8)(DISPPOLARCUR/10);
+  gloDataBuffer[dataLen++]=(u8)((DISPBATCUR/10)>>8);
+  gloDataBuffer[dataLen++]=(u8)(DISPBATCUR/10);
+  gloDataBuffer[dataLen++] = (u8)gloRoadPowerInputSta.inputByte;
+  gloDataBuffer[dataLen++] = (u8)gloRoadPowerOutputSta.outputByte;
+  gloDataBuffer[dataLen++]=0;
+  
+  return dataLen;
+}
+
+
+u8 GetControlParameter(void)
+{
+  u8 dataBufLen =0;
+  //获取系统关键控制参数
+  gloDataBuffer[dataBufLen++]=(u8)((DEF_BAT_CVOL/10)>>8);
+  gloDataBuffer[dataBufLen++]=(u8)(DEF_BAT_CVOL/10) ;
+  gloDataBuffer[dataBufLen++]=(u8)((DEF_BAT_FVOL/10)>>8);
+  gloDataBuffer[dataBufLen++]=(u8)(DEF_BAT_FVOL/10);
+  gloDataBuffer[dataBufLen++]=(u8)((DEF_LOAD_OVLDCUR/10)>>8);
+  gloDataBuffer[dataBufLen++]=(u8)(DEF_LOAD_OVLDCUR/10);
+  return dataBufLen;
+}
+
+
+
+
+
+volatile u8 waitOverTime=0;
+
+/**
+********************************************************
+* 函数名：void CommunicationProcessing(void)
+* 说明: 处理电源与外部设备间的通信任务
+*	输入参数:	void
+* 输出参数:void
+* 备注： 
+
+Communication  with other device  
+a if the communication request appearing
+Read the data from the communication data input buffer
+b Unpackageing and analytical the data what packaged according to the protocol.
+c Get the order and do the special operation
+d Send the request to display 
+e return to the packaged data.
+********************************************************
+*/
+
+void AppRs232CommProcessing(void)
+{
+#if FALSE
+  u16 tempFVol;
+  u16 tempCVol;
+  u16 tempCur;
+  s8 tempYear,tempMonth,tempDay,tempHour,tempMinute,tempSecond;
+  RTC_TIMER  	r;
+  
+  switch(UnpackedBuffer())   //用互斥信号量使用公共方法
+  {
+  case CMD_GetParamter:
+    GetParameter();
+    PackedBuffer(CMD_GetParamter, gloDataBuffer, 0x08, RECEIVE_SUCCESS);
+    RS232_Send_Data(resCmd.len);
+    break;
+    
+  case CMD_SetParamter:
+    tempCVol = ((u16)(pcCmd.pbuf[0]<<8)+(u16)pcCmd.pbuf[1])*10;
+    tempFVol = ((u16)(pcCmd.pbuf[2]<<8)+(u16)pcCmd.pbuf[3])*10;
+    tempCur =  ((u16)(pcCmd.pbuf[4]<<8)+(u16)pcCmd.pbuf[5])*10;	
+    
+    if( tempCVol > BAT_SET_CVOL_UPPER  || tempCVol < BAT_SET_CVOL_FLOOR ||
+       tempFVol > BAT_SET_FVOL_UPPER  || tempFVol < BAT_SET_FVOL_FLOOR ||
+         tempCur >DCLOAD_MAXCUR_UPPER || tempCur < DCLOAD_MAXCUR_FLOOR )
+    {
+      //          PackedBuffer(CMD_SetParamter, gloDataBuffer, 1, RECEIVE_ERROR); 
+      //          UART3_SendMessage(resCmd.len);
+      //waitOverTime=OVERTIME_FALSE;
+    } 
+    else
+    {
+      BAT_CVOL = tempCVol;
+      BAT_FVOL = tempFVol;
+      LOAD_OVLDCUR = tempCur;
+    }
+    break;
+    
+  case CMD_GetInformation:
+    GetInformation();
+    PackedBuffer(CMD_GetInformation, gloDataBuffer, 0x0f, RECEIVE_SUCCESS);
+    RS232_Send_Data(resCmd.len);
+    break;	
+    
+  case CMD_SETTIME:
+    tempYear = ((u8)(pcCmd.pbuf[0]));
+    tempMonth = ((u8)(pcCmd.pbuf[1]));
+    tempDay =  ((u8)(pcCmd.pbuf[2]));
+    tempHour= ((u8)(pcCmd.pbuf[3]));
+    tempMinute=((u8)(pcCmd.pbuf[4]));
+    tempSecond=((u8)(pcCmd.pbuf[5]));
+    
+    if( tempYear >= 0&& tempYear <=99 
+       && tempMonth>=1 && tempMonth <= 12
+         && tempDay>=1 && tempDay<=31
+           && tempHour>=0 && tempHour<=23
+             && tempMinute>=0 && tempMinute<=59
+               && tempSecond>=0 && tempSecond<=59
+                 )
+    {
+      r.yy = tempYear;
+      r.mm = tempMonth;
+      r.dd=tempDay;
+      r.hour=tempHour;
+      r.min=tempMinute;
+      r.sec=tempSecond;
+      
+      PCF8563SetTime(r);
+    } 
+    break;
+    
+  case CMD_GetErrorLog:
+    break;	
+    
+  case CMD_CRCERR://CRC错误		
+    break;
+  default: //不支持该命令			
+    break;
+  }
+#endif 
+  
+}
+
+
+void AppRs485CommProcessing(UART_DEVICE_TYPE uartType)
+{
+  u16 tempFVol;
+  u16 tempCVol;
+  u16 tempCur;
+  s8 tempYear,tempMonth,tempDay,tempHour,tempMinute,tempSecond;
+  u8 frameLength = 0;  //命令帧长度
+  RTC_TIMER  	r;
+  u8 dataBufLen = 0;
+  
+  switch(UnpackedBuffer(uartType))  
+  {
+  case CMD_GET_CONTROL_PARA:
+    dataBufLen = GetControlParameter();
+    frameLength=PackedBuffer(CMD_GET_CONTROL_PARA, gloDataBuffer, dataBufLen+2, RECEIVE_SUCCESS,uartType); //长度为总数据长度
+    RS485_Send_Data((u8 *)&rs485_TxBuf ,frameLength);
+    break;
+    
+  case CMD_SET_CONTROL_PARA:
+    tempCVol = ((u16)(pcCmd.pbuf[0]<<8)+(u16)pcCmd.pbuf[1])*10;
+    tempFVol = ((u16)(pcCmd.pbuf[2]<<8)+(u16)pcCmd.pbuf[3])*10;
+    tempCur =  ((u16)(pcCmd.pbuf[4]<<8)+(u16)pcCmd.pbuf[5])*10;	
+    
+    if( tempCVol > BAT_SET_CVOL_UPPER  || tempCVol < BAT_SET_CVOL_FLOOR ||
+       tempFVol > BAT_SET_FVOL_UPPER  || tempFVol < BAT_SET_FVOL_FLOOR ||
+         tempCur > DCLOAD_MAXCUR_UPPER || tempCur < DCLOAD_MAXCUR_FLOOR )
+    {
+      // PackedBuffer(CMD_SetParamter, gloDataBuffer, 1, RECEIVE_ERROR); 
+      // UART1_SendMessage(resCmd.len);
+      //waitOverTime=OVERTIME_FALSE;
+    } 
+    else
+    {
+      BAT_CVOL = tempCVol;
+      BAT_FVOL = tempFVol;
+      LOAD_OVLDCUR = tempCur;
+      
+    }
+    break;
+  case CMD_GET_RUNNING_INFO:
+    dataBufLen = GetRunningInformation();
+    frameLength = PackedBuffer(CMD_GET_RUNNING_INFO, gloDataBuffer, dataBufLen+2, RECEIVE_SUCCESS,uartType);
+    RS485_Send_Data((u8 *)&rs485_TxBuf ,frameLength);
+    break;	
+  case CMD_SETTIME:
+    tempYear = ((u8)(pcCmd.pbuf[0]));
+    tempMonth = ((u8)(pcCmd.pbuf[1]));
+    tempDay =  ((u8)(pcCmd.pbuf[2]));
+    tempHour= ((u8)(pcCmd.pbuf[3]));
+    tempMinute=((u8)(pcCmd.pbuf[4]));
+    tempSecond=((u8)(pcCmd.pbuf[5]));
+    
+    if(tempYear >= 0&& tempYear <=99 
+       && tempMonth>=1 && tempMonth <= 12
+         && tempDay>=1 && tempDay<=31
+           && tempHour>=0 && tempHour<=23
+             && tempMinute>=0 && tempMinute<=59
+               && tempSecond>=0 && tempSecond<=59
+                 )
+    {
+      r.yy = tempYear;
+      r.mm = tempMonth;
+      r.dd=tempDay;
+      r.hour=tempHour;
+      r.min=tempMinute;
+      r.sec=tempSecond;
+      
+      PCF8563SetTime(r);
+    } 
+    break;
+    
+  case CMD_GetErrorLog:
+    break;	
+    
+  case CMD_CRCERR://CRC错误		
+    break;
+    
+  default: //不支持该命令			
+    break;
+  }
+}
+
+
+
+
+
+
+

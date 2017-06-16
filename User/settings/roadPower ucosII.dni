@@ -1,0 +1,96 @@
+[DebugChecksum]
+Checksum=-1074593761
+[Stack]
+FillEnabled=0
+OverflowWarningsEnabled=1
+WarningThreshold=90
+SpWarningsEnabled=1
+WarnLogOnly=1
+UseTrigger=1
+TriggerName=main
+LimitSize=0
+ByteLimit=50
+[Exceptions]
+StopOnUncaught=_ 0
+StopOnThrow=_ 0
+[CallStack]
+ShowArgs=0
+[Disassembly]
+MixedMode=0
+[JLinkDriver]
+CStepIntDis=_ 0
+[SWOTraceHWSettings]
+OverrideDefaultClocks=0
+CpuClock=72000000
+ClockAutoDetect=0
+ClockWanted=2000000
+JtagSpeed=2000000
+Prescaler=36
+TimeStampPrescIndex=0
+TimeStampPrescData=0
+PcSampCYCTAP=1
+PcSampPOSTCNT=15
+PcSampIndex=0
+DataLogMode=0
+ITMportsEnable=0
+ITMportsTermIO=0
+ITMportsLogFile=0
+ITMlogFile=$PROJ_DIR$\ITM.log
+[Trace2]
+Enabled=0
+ShowSource=0
+[SWOTraceWindow]
+PcSampling=0
+InterruptLogs=0
+ForcedTimeStamps=0
+EventCPI=0
+EventEXC=0
+EventFOLD=0
+EventLSU=0
+EventSLEEP=0
+[DataLog]
+LogEnabled=0
+SumEnabled=0
+GraphEnabled=0
+ShowTimeLog=1
+ShowTimeSum=1
+[InterruptLog]
+LogEnabled=0
+SumEnabled=0
+GraphEnabled=0
+ShowTimeLog=1
+ShowTimeSum=1
+SumSortOrder=0
+[watch_formats]
+Fmt0={W}42:Kp	0	7
+[Log file]
+LoggingEnabled=_ 1
+LogFile=_ "$PROJ_DIR$\LogFile1.log"
+Category=_ 0
+[TermIOLog]
+LoggingEnabled=_ 0
+LogFile=_ ""
+[CallStackLog]
+Enabled=0
+[DriverProfiling]
+Enabled=0
+Mode=0
+Graph=0
+Symbiont=0
+Exclusions=
+[Disassemble mode]
+mode=0
+[Breakpoints2]
+Bp0=_ 0 "EMUL_CODE" "{C:\Users\Administrator\Desktop}.180.1" 0 0 1 "" 0 "" 0
+Bp1=_ 0 "EMUL_CODE" "0x08005E82" 0 0 1 "" 0 "" 0
+Bp2=_ 0 "EMUL_CODE" "0x08005E40" 0 0 1 "" 0 "" 0
+Bp3=_ 0 "EMUL_CODE" "0x08009A32" 0 0 1 "" 0 "" 0
+Count=4
+[Aliases]
+A0=_ "C:\Documents and Settings\Administrator\我的文档\桌面\后备式道路监控电源\release Code\RoadPower 1.0\Libraries\STM32F10x_StdPeriph_Driver\src\stm32f10x_usart.c" ""
+A1=_ "D:\study\道路监控电源\原版2016-02-16\RoadPower 1.1(ACS758-050)\USER\uCOS-II\Ports\ARM-Cortex-M3\IAR\os_cpu_a.asm" ""
+A2=_ "E:\study\道路监控电源\点阵\点阵算法\USER\uCOS-II\Ports\ARM-Cortex-M3\IAR\os_cpu_a.asm" ""
+A3=_ "E:\study\道路监控电源\原版2016-02-16\RoadPower 1.1(ACS758-050)\Libraries\STM32F10x_DSP_Lib\src\asm\iar\cr4_fft_64_stm32.s" ""
+A4=_ "E:\study\道路监控电源\原版2016-02-16\RoadPower 1.1(ACS758-050)修改版\Libraries\STM32F10x_StdPeriph_Driver\src\stm32f10x_usart.c" ""
+Count=5
+SuppressDialog=1

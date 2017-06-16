@@ -1,0 +1,115 @@
+
+
+/* 包含自定义头文件 */
+#include "soc.h"
+#include "tim.h"
+#include "control.h"
+#include "battery.h"
+#include "tim.h"
+
+
+/* 自定义新类型 */
+
+/* 自定义宏 */
+
+
+//电池能量，以Ah表示
+volatile s32 batEnergy;
+extern u16 baseVal[5];   
+//蓄电池电压
+#define MAX_NUM   14
+u16 tabVol[MAX_NUM]={2160,2260,2300,2360,2400,2450,2480,2500,2530,2560,2580,2606,2620,2640};
+//蓄电池电量
+u16 tabSoc[MAX_NUM]={10,20,30,40,50,62,68,75,82,88,91,94,96,98};
+
+
+u16 SocInit(u16 val)
+{
+  u16 tsoc = 0;
+  tsoc=GetSoc(val); 
+ 
+#if  FALSE
+  if(EEPROM_ReadByte(SOC_flag_addr)!=0x55)
+  {
+    tsoc=Get_SOC(val); 
+    EEPROM_Unlock();
+    EEPROM_WriteByte(SOC_addr,BATSOC);
+    EEPROM_WriteByte(SOC_flag_addr,0x55);
+    EEPROM_Lock();
+  }
+  else 
+  {
+    tsoc = EEPROM_ReadByte(SOC_addr);
+  }
+#endif  
+  return tsoc;
+}
+
+u16 GetSoc(u16 batVol)
+{
+  u16 soc=0;
+  u16 x0,y0,x1,y1;
+  u8 i, index, front, rear;
+  
+  index = front = rear = 0;
+  if (batVol > tabVol[MAX_NUM-1])
+  {
+    soc = tabSoc[MAX_NUM-1];
+    return soc;
+  }
+  
+  if (batVol < tabVol[0])
+  {
+    soc = tabSoc[0];
+    return soc;
+  }
+  
+  for (i=0; i < MAX_NUM; i++)
+  {
+    if (tabVol[i] >= batVol)
+    {
+      index = i;
+      break;
+    }
+  }
+  front = index-1;
+  rear = index;
+  
+  x0=tabSoc[front];
+  y0=tabVol[front];
+  x1=tabSoc[rear];
+  y1=tabVol[rear];
+  
+  soc = x0 + (s16)(x1-x0)*(batVol-y0)/(s16)(y1-y0); //点斜式方程
+  
+  return soc;
+}
+
+
+volatile u16 PRESOC = 0;
+void BatSocCounter(void)
+{ 
+  if (CheckTimer(SOC_TIMER)) //1s
+  {
+    //电池充放电能量转化关系  Ex=E0+(batCur*hour),计算过程中将Ah->As
+      batEnergy+=((s32)BATCUR*1)/100;  
+      PRESOC=BATSOC;
+      BATSOC=(s32)batEnergy/(DEF_BAT_SET_CAPACITY*3600);
+      if (BATSOC>98) 
+      {
+        BATSOC = 98;       
+        batEnergy = (s32)DEF_BAT_SET_CAPACITY*BATSOC*3600; //将AH->AS,表示蓄电池能量
+      }
+      else if (BATSOC< 10) 
+      {
+        BATSOC=10;
+        batEnergy = (s32)DEF_BAT_SET_CAPACITY*BATSOC*3600; 
+      }    
+     DISPBATSOC=BATSOC;
+    SetTimer(SOC_TIMER, 1000);
+  }
+}
+
+
+
+
